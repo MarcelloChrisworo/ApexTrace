@@ -1,36 +1,103 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ApexTrace
 
-## Getting Started
+Tugas 2 menambahkan Nginx sebagai satu-satunya pintu masuk ke aplikasi. Backend
+dijalankan sebagai tiga container dan database hanya berada di jaringan internal
+Compose.
 
-First, run the development server:
+## Menjalankan
+
+Docker Desktop aktif, lalu jalankan dari root repository:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+docker compose up --build --scale backend=3 -d
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+buka `http://localhost:8080`. buat stop stackny dengan:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+docker compose down
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+`backend` memakai `expose`, bukan `ports`, sehingga port 3000 hanya dapat
+dijangkau oleh service lain di jaringan Compose. `db` juga tidak mempublikasikan
+port ke host.
 
-## Learn More
+# Bukti
 
-To learn more about Next.js, take a look at the following resources:
+Contoh berikut dijalankan setelah `docker compose up --build --scale backend=3 -d`.
+Alamat pada `X-Upstream` dapat berbeda urutannya, tetapi harus berganti di antara
+tiga alamat container backend.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# Reverse proxy dan load balancing
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```text
+$ curl -sS -D - http://localhost:8080/api/health -o /dev/null
+HTTP/1.1 200 OK
+Content-Type: application/json
+X-Content-Type-Options: nosniff
+X-Upstream: 172.20.0.3:3000
 
-## Deploy on Vercel
+$ curl -sS -D - http://localhost:8080/api/health -o /dev/null
+HTTP/1.1 200 OK
+Content-Type: application/json
+X-Content-Type-Options: nosniff
+X-Upstream: 172.20.0.4:3000
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+$ curl -sS -D - http://localhost:8080/api/health -o /dev/null
+HTTP/1.1 200 OK
+Content-Type: application/json
+X-Content-Type-Options: nosniff
+X-Upstream: 172.20.0.5:3000
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+# Rate limit
+
+Route `/api/health` dibatasi `2r/s` dengan burst 2. Request cepat berulang
+menghasilkan status 429:
+
+```text
+$ for i in $(seq 1 10); do curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/api/health; done
+200
+200
+200
+200
+429
+429
+429
+429
+429
+429
+```
+
+# Header keamanan dan gzip
+
+```text
+$ curl --compressed -sS -D - http://localhost:8080/api/health -o /dev/null
+HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Encoding: gzip
+X-Content-Type-Options: nosniff
+```
+
+# Port backend lama tidak bisa diakses
+
+```text
+$ curl --connect-timeout 2 http://localhost:3000/api/health
+curl: (7) Failed to connect to localhost port 3000
+```
+
+## Jawaban pertanyaan
+
+(a) `zone` menyediakan shared memory utk konfigurasi dan state upstream yang
+dipakai breng sm worker Nginx. kl dihapus, konfigurasi upstream statis ini
+masih dapat meneruskan request, tp state load balancing tidak dibagi antar
+worker dan fitur perubahan upstream secara runtime tidak tersedia.
+
+(b) `limit_req_status 429` memakai status standar “Too Many Requests” yang
+jelas bagi client bahwa request ditolak karena rate limit. Bawaan Nginx adalah
+503 Service Unavailable, yang terlihat seperti gangguan server, bukan throttling.
+
+(c)** Backend dan database g punya `ports` agar keduanya tidak bisa diakses
+langsung dari host dan Nginx menjadi satu-satunya pintu masuk. Nginx menjangkau
+backend melalui nama service `backend` dan port internal 3000 pada network
+Compose.

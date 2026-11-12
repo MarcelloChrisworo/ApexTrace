@@ -1,0 +1,39 @@
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+
+  backend:
+    build:
+      context: .
+    deploy:
+      replicas: 3
+    environment:
+      INSTANCE_ID: "${INSTANCE_ID:-backend}"
+    expose:
+      - "3000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: apextrace
+      POSTGRES_USER: apextrace
+      POSTGRES_PASSWORD: apextrace-dev-only
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apextrace -d apextrace"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
